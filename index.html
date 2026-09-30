@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Route Cams</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #fff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+    --accent: #0b6bcb; --accent-ink: #fff; --active: #e8f1fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --ink: #ecece8; --muted: #9a9a94; --line: #34342f;
+            --accent: #4d9bea; --accent-ink: #0b0b0a; --active: #1c2c3d; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--ink); }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0 0 10px; font-size: 18px; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  input, select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  input[type=text] { width: min(340px, 80vw); }
+  button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { margin-top: 8px; color: var(--muted); min-height: 1.4em; }
+  #status.err { color: #c0392b; }
+  main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  #player { position: relative; background: #000; aspect-ratio: 4 / 3; max-height: 70vh; width: 100%; }
+  #player video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #player .msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #bbb; text-align: center; padding: 20px; }
+  #progress { height: 3px; background: var(--accent); width: 0; transition: width linear; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  #camTitle { font-weight: 600; flex: 1 1 200px; }
+  #camTitle small { display: block; font-weight: 400; color: var(--muted); }
+  #map { height: min(60vh, 520px); }
+  .side { display: flex; flex-direction: column; gap: 10px; }
+  .pick { font-size: 13px; font-weight: 600; color: var(--ink); }
+  #camSelect { width: 100%; background: var(--panel); }
+  .field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .ac { position: relative; }
+  .ac input { padding-right: 34px; }
+  .ac input.ok { border-color: #2e9d57; box-shadow: inset 3px 0 0 #2e9d57; }
+  .ac input.bad { border-color: #c0392b; box-shadow: inset 3px 0 0 #c0392b; }
+  .inbtn { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); padding: 2px 7px; border: 0; background: none; color: var(--accent); font-size: 16px; }
+  #swap { padding: 7px 10px; }
+  .sug { position: absolute; z-index: 2000; left: 0; right: 0; top: calc(100% + 2px); margin: 0; padding: 4px 0; list-style: none;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+  .sug li { padding: 7px 12px; cursor: pointer; color: var(--ink); font-size: 13px; }
+  .sug li small { display: block; color: var(--muted); font-size: 11px; }
+  .sug li.hi, .sug li:hover { background: var(--active); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Route Cams: live TxDOT cameras along your drive</h1>
+  <form id="f">
+    <div class="field"><label for="from">From</label>
+      <div class="ac">
+        <input type="text" id="from" placeholder="Start typing an address or place" autocomplete="off" required>
+        <button type="button" class="inbtn" id="myloc" title="Use my current location">◎</button>
+        <ul class="sug" hidden></ul>
+      </div>
+    </div>
+    <button type="button" id="swap" title="Swap From and To">⇄</button>
+    <div class="field"><label for="to">To</label>
+      <div class="ac">
+        <input type="text" id="to" placeholder="Start typing an address or place" autocomplete="off" required>
+        <ul class="sug" hidden></ul>
+      </div>
+    </div>
+    <label>Within
+      <select id="buffer">
+        <option value="100">100 m</option>
+        <option value="200" selected>200 m</option>
+        <option value="400">400 m</option>
+        <option value="800">800 m</option>
+      </select>
+    </label>
+    <label>Each camera
+      <select id="dwell">
+        <option value="5">5 s</option>
+        <option value="10" selected>10 s</option>
+        <option value="20">20 s</option>
+        <option value="30">30 s</option>
+        <option value="0">Manual</option>
+      </select>
+    </label>
+    <button class="primary" id="go">Find cameras</button>
+  </form>
+  <div id="status"></div>
+</header>
+
+<main>
+  <section class="card">
+    <div id="player"><video id="video" muted playsinline autoplay></video><div class="msg" id="pmsg">Enter a route to start.</div></div>
+    <div id="progress"></div>
+    <div class="bar">
+      <div id="camTitle">No camera</div>
+      <button id="prev" disabled>◀ Prev</button>
+      <button id="play" disabled>Pause</button>
+      <button id="next" disabled>Next ▶</button>
+    </div>
+  </section>
+  <div class="side">
+    <label class="pick"><span id="listTitle">Cameras on route</span>
+      <select id="camSelect" disabled><option>Enter a route first</option></select>
+    </label>
+    <section class="card"><div id="map"></div></section>
+  </div>
+</main>
+
+<script>
+const ML = 'https://dtx-e-cdn.maplarge.com/Api/ProcessDirect';
+const TABLE = 'appgeo/cameraPoint';
+const $ = id => document.getElementById(id);
+
+// ---------- DriveTexas (MapLarge) ----------
+async function mlQuery(query) {
+  // The service marks responses cacheable for a week; bypass caches so stream tokens are current.
+  const r = await fetch(ML + '?request=' + encodeURIComponent(JSON.stringify({ action: 'table/query', query })) + '&_=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('DriveTexas camera service returned ' + r.status);
+  const j = await r.json();
+  const d = j?.data?.data || {};
+  const keys = Object.keys(d);
+  const n = keys.length ? Math.min(...keys.map(k => d[k].length)) : 0;
+  return Array.from({ length: n }, (_, i) => Object.fromEntries(keys.map(k => [k, d[k][i]])));
+}
+
+let allCams = null;
+async function loadAllCams() {
+  if (allCams) return allCams;
+  const rows = await mlQuery({ sqlselect: ['name', 'description', 'XY'], start: 0, table: TABLE, take: 10000, where: [] });
+  allCams = rows.map(r => {
+    const m = /POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)/.exec(r.XY || '');
+    return m && { name: r.name, desc: r.description, lng: +m[1], lat: +m[2] };
+  }).filter(Boolean);
+  return allCams;
+}
+
+// Stream tokens expire after ~5 min, so fetch a fresh URL right before playing.
+async function freshStreamUrl(name) {
+  const rows = await mlQuery({ sqlselect: ['name', 'httpsurl'], start: 0, table: TABLE, where: [{ col: 'name', test: 'EqualAny', value: [name] }] });
+  return rows[0]?.httpsurl;
+}
+
+// ---------- Geocoding & routing ----------
+// Esri World Geocoder: Google-style suggestions, biased toward Austin.
+const GEO = 'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer';
+const BIAS = '&location=-97.7431,30.2672&countryCode=USA';
+
+async function suggest(text) {
+  const j = await (await fetch(`${GEO}/suggest?f=json&maxSuggestions=6${BIAS}&text=${encodeURIComponent(text)}`)).json();
+  return (j.suggestions || []).filter(s => !s.isCollection);
+}
+
+// Resolve a picked suggestion (magicKey) or free text to one location. Returns null if nothing credible matches.
+async function resolve(text, magicKey) {
+  const mk = magicKey ? '&magicKey=' + encodeURIComponent(magicKey) : '';
+  const j = await (await fetch(`${GEO}/findAddressCandidates?f=json&maxLocations=1&outFields=Match_addr${BIAS}${mk}&singleLine=${encodeURIComponent(text)}`)).json();
+  const c = j.candidates?.[0];
+  if (!c || c.score < 80) return null;
+  return { lat: c.location.y, lng: c.location.x, label: c.address };
+}
+
+async function reverse(lat, lng) {
+  const j = await (await fetch(`${GEO}/reverseGeocode?f=json&location=${lng},${lat}`)).json();
+  return j.address?.Match_addr || j.address?.LongLabel || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+// Picked location per input; cleared whenever the user edits the text.
+const picked = { from: null, to: null };
+
+function setPicked(input, place) {
+  picked[input.id] = place;
+  if (place) input.value = place.label;
+  input.classList.toggle('ok', !!place);
+  input.classList.remove('bad');
+}
+
+function autocomplete(input) {
+  const list = input.parentElement.querySelector('.sug');
+  let items = [], hi = -1, timer = null, seq = 0;
+
+  const close = () => { list.hidden = true; hi = -1; };
+  const render = () => {
+    list.innerHTML = '';
+    items.forEach((s, k) => {
+      const [main, ...rest] = s.text.split(', ');
+      const li = document.createElement('li');
+      li.innerHTML = `${main}<small>${rest.join(', ')}</small>`;
+      li.classList.toggle('hi', k === hi);
+      li.onmousedown = e => { e.preventDefault(); choose(k); };
+      list.appendChild(li);
+    });
+    list.hidden = !items.length;
+  };
+  const choose = async k => {
+    const s = items[k]; close();
+    input.value = s.text;
+    const place = await resolve(s.text, s.magicKey);
+    if (place) place.label = s.text; // suggestion text is more descriptive for places
+    setPicked(input, place);
+    if (!place) input.classList.add('bad');
+  };
+
+  input.addEventListener('input', () => {
+    setPicked(input, null);
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 3) { items = []; close(); return; }
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      try { const r = await suggest(q); if (my === seq) { items = r; hi = -1; render(); } } catch {}
+    }, 200);
+  });
+  input.addEventListener('keydown', e => {
+    if (list.hidden || !items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); hi = (hi + 1) % items.length; render(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hi = (hi - 1 + items.length) % items.length; render(); }
+    else if (e.key === 'Enter' && hi >= 0) { e.preventDefault(); choose(hi); }
+    else if (e.key === 'Escape') close();
+  });
+  input.addEventListener('blur', close);
+}
+autocomplete($('from'));
+autocomplete($('to'));
+
+$('swap').onclick = () => {
+  const a = picked.from, b = picked.to, va = $('from').value, vb = $('to').value;
+  setPicked($('from'), b); setPicked($('to'), a);
+  if (!b) $('from').value = vb;
+  if (!a) $('to').value = va;
+};
+
+$('myloc').onclick = () => {
+  if (!navigator.geolocation) return setStatus('Location is not available in this browser.', true);
+  setStatus('Getting your location…');
+  navigator.geolocation.getCurrentPosition(async p => {
+    const { latitude: lat, longitude: lng } = p.coords;
+    setPicked($('from'), { lat, lng, label: await reverse(lat, lng) });
+    setStatus('');
+  }, err => setStatus('Could not get your location: ' + err.message, true), { enableHighAccuracy: true, timeout: 10000 });
+};
+
+// Use the picked suggestion, or validate whatever was typed.
+async function locate(input, what) {
+  if (picked[input.id]) return picked[input.id];
+  const place = await resolve(input.value.trim());
+  if (!place) { input.classList.add('bad'); throw new Error(`Couldn't find the ${what} address "${input.value}". Pick one of the suggestions.`); }
+  setPicked(input, place);
+  return place;
+}
+
+async function route(a, b) {
+  const u = `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+  const j = await (await fetch(u)).json();
+  if (j.code !== 'Ok' || !j.routes?.length) throw new Error('No driving route found.');
+  return { coords: j.routes[0].geometry.coordinates.map(([lng, lat]) => ({ lat, lng })), meters: j.routes[0].distance, secs: j.routes[0].duration };
+}
+
+// ---------- Geometry: which cameras are near the route, in travel order ----------
+function camerasAlongRoute(cams, path, bufferM) {
+  const lat0 = path[0].lat * Math.PI / 180;
+  const kx = 111320 * Math.cos(lat0), ky = 110540; // local equirectangular metres
+  const P = path.map(p => ({ x: p.lng * kx, y: p.lat * ky }));
+  const cum = [0];
+  for (let i = 1; i < P.length; i++) cum.push(cum[i - 1] + Math.hypot(P[i].x - P[i - 1].x, P[i].y - P[i - 1].y));
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of P) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
+
+  const out = [];
+  for (const c of cams) {
+    const x = c.lng * kx, y = c.lat * ky;
+    if (x < minX - bufferM || x > maxX + bufferM || y < minY - bufferM || y > maxY + bufferM) continue;
+    let best = Infinity, along = 0;
+    for (let i = 1; i < P.length; i++) {
+      const ax = P[i - 1].x, ay = P[i - 1].y, dx = P[i].x - ax, dy = P[i].y - ay;
+      const L2 = dx * dx + dy * dy;
+      const t = L2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0;
+      const d = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+      if (d < best) { best = d; along = cum[i - 1] + t * Math.sqrt(L2); }
+    }
+    if (best <= bufferM) out.push({ ...c, along, off: best });
+  }
+  return out.sort((a, b) => a.along - b.along);
+}
+
+// ---------- Map ----------
+const map = L.map('map').setView([30.2672, -97.7431], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+new ResizeObserver(() => map.invalidateSize()).observe($('map'));
+let layer = L.layerGroup().addTo(map);
+let markers = [];
+
+// ---------- Player ----------
+let cams = [], idx = -1, playing = true, timer = null, hls = null, token = 0;
+const video = $('video');
+
+function setStatus(t, err) { $('status').textContent = t; $('status').className = err ? 'err' : ''; }
+function msg(t) { $('pmsg').textContent = t; $('pmsg').hidden = !t; }
+
+function stopTimer() { clearTimeout(timer); timer = null; const p = $('progress'); p.style.transition = 'none'; p.style.width = '0'; }
+function startTimer() {
+  stopTimer();
+  const secs = +$('dwell').value;
+  if (!playing || !secs || cams.length < 2) return;
+  const p = $('progress');
+  requestAnimationFrame(() => { p.style.transition = `width ${secs}s linear`; p.style.width = '100%'; });
+  timer = setTimeout(() => show(idx + 1), secs * 1000);
+}
+
+async function show(i) {
+  if (!cams.length) return;
+  idx = (i + cams.length) % cams.length;
+  const c = cams[idx], my = ++token;
+  stopTimer();
+  $('camTitle').innerHTML = `${idx + 1} / ${cams.length} · ${c.desc || c.name}<small>${c.name} · ${(c.along / 1609.34).toFixed(1)} mi into route</small>`;
+  $('camSelect').value = idx;
+  markers.forEach((m, k) => m.setStyle(k === idx ? { radius: 9, fillColor: '#e74c3c' } : { radius: 6, fillColor: '#0b6bcb' }));
+  map.setView([c.lat, c.lng], 14, { animate: true });
+
+  msg('Loading live feed…');
+  if (hls) { hls.destroy(); hls = null; }
+  video.removeAttribute('src'); video.load();
+  let url;
+  try { url = await freshStreamUrl(c.name); } catch { url = null; }
+  if (my !== token) return;
+  if (!url) { msg('Feed unavailable for this camera.'); startTimer(); return; }
+
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({ lowLatencyMode: true, manifestLoadingMaxRetry: 1 });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { if (my === token) { msg(''); video.play().catch(() => {}); } });
+    hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal && my === token) { msg('Feed unavailable for this camera.'); hls.destroy(); hls = null; } });
+    hls.loadSource(url); hls.attachMedia(video);
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = url; video.onloadeddata = () => my === token && msg('');
+    video.onerror = () => my === token && msg('Feed unavailable for this camera.');
+    video.play().catch(() => {});
+  } else { msg('This browser cannot play HLS video.'); }
+  startTimer();
+}
+
+$('next').onclick = () => show(idx + 1);
+$('prev').onclick = () => show(idx - 1);
+$('play').onclick = () => { playing = !playing; $('play').textContent = playing ? 'Pause' : 'Play'; playing ? startTimer() : stopTimer(); };
+$('camSelect').onchange = e => show(+e.target.value);
+$('dwell').onchange =() => cams.length && startTimer();
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || !cams.length) return;
+  if (e.key === 'ArrowRight') show(idx + 1);
+  if (e.key === 'ArrowLeft') show(idx - 1);
+  if (e.key === ' ') { e.preventDefault(); $('play').click(); }
+});
+
+// ---------- Search ----------
+$('f').onsubmit = async e => {
+  e.preventDefault();
+  $('go').disabled = true;
+  try {
+    setStatus('Checking addresses…');
+    const [a, b] = await Promise.all([locate($('from'), 'From'), locate($('to'), 'To')]);
+    setStatus('Routing…');
+    const [r, all] = await Promise.all([route(a, b), loadAllCams()]);
+    cams = camerasAlongRoute(all, r.coords, +$('buffer').value);
+
+    layer.clearLayers();
+    const line = L.polyline(r.coords, { color: '#0b6bcb', weight: 5, opacity: .7 }).addTo(layer);
+    L.marker([a.lat, a.lng], { title: 'From' }).addTo(layer);
+    L.marker([b.lat, b.lng], { title: 'To' }).addTo(layer);
+    markers = cams.map((c, k) => L.circleMarker([c.lat, c.lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#0b6bcb', fillOpacity: 1 })
+      .bindTooltip(`${k + 1}. ${c.desc}`).on('click', () => show(k)).addTo(layer));
+    map.invalidateSize();
+    map.fitBounds(line.getBounds(), { padding: [20, 20] });
+
+    const sel = $('camSelect');
+    sel.innerHTML = cams.length ? '' : '<option>No cameras on route</option>';
+    cams.forEach((c, k) => sel.add(new Option(`${k + 1}. ${c.desc || c.name} (${(c.along / 1609.34).toFixed(1)} mi)`, k)));
+    sel.disabled = !cams.length;
+    $('listTitle').textContent = `Cameras on route (${cams.length})`;
+    const mi = (r.meters / 1609.34).toFixed(1), min = Math.round(r.secs / 60);
+    ['prev', 'next', 'play'].forEach(id => $(id).disabled = !cams.length);
+
+    if (!cams.length) {
+      setStatus(`Route: ${mi} mi, ~${min} min. No DriveTexas cameras within ${$('buffer').value} m. Try a wider distance.`);
+      msg('No cameras on this route.'); $('camTitle').textContent = 'No camera';
+    } else {
+      setStatus(`Route: ${mi} mi, ~${min} min · ${cams.length} cameras in driving order.`);
+      playing = true; $('play').textContent = 'Pause';
+      show(0);
+    }
+  } catch (err) {
+    setStatus(err.message || String(err), true);
+  } finally { $('go').disabled = false; }
+};
+</script>
+</body>
+</html>
